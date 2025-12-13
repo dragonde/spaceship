@@ -46,6 +46,12 @@ def _parse_args() -> argparse.Namespace:
         help="Ruta del CSV de entrada (por defecto: train9.csv).",
     )
     p.add_argument(
+        "--k",
+        type=int,
+        default=None,
+        help="Fuerza el número de clústeres (k). Si se omite, se selecciona por silhouette.",
+    )
+    p.add_argument(
         "--output",
         default="train9_with_age_clusters.csv",
         help="Ruta del CSV de salida con clústeres.",
@@ -247,7 +253,7 @@ def _transported_rate_by_cluster(df_out: pd.DataFrame) -> pd.DataFrame | None:
     return rate
 
 
-def _write_transported_rate_plot(rate_df: pd.DataFrame, plots_dir: Path) -> None:
+def _write_transported_rate_plot(rate_df: pd.DataFrame, plots_dir: Path, best_k: int) -> Path:
     plots_dir.mkdir(parents=True, exist_ok=True)
     fig, ax = plt.subplots(figsize=(8, 5))
     x = rate_df["AgeClusterLabel"].astype(str).to_list()
@@ -261,8 +267,10 @@ def _write_transported_rate_plot(rate_df: pd.DataFrame, plots_dir: Path) -> None
     for i, val in enumerate(y):
         ax.text(i, val + 1.0, f"{val:.1f}%", ha="center", va="bottom", fontsize=10)
     fig.tight_layout()
-    fig.savefig(plots_dir / "age_clusters_transported_rate.png", dpi=250, bbox_inches="tight")
+    out_path = plots_dir / f"age_clusters_transported_rate_k{best_k}.png"
+    fig.savefig(out_path, dpi=250, bbox_inches="tight")
     plt.close(fig)
+    return out_path
 
 
 def main() -> None:
@@ -275,12 +283,17 @@ def main() -> None:
     df = pd.read_csv(input_path)
     age_raw, age_imputed = _prepare_age(df)
 
+    forced_k = args.k
+    if forced_k is not None and int(forced_k) < 2:
+        raise ValueError("--k debe ser >= 2")
+
     max_k = int(args.max_k)
     if max_k < 2:
         raise ValueError("--max-k debe ser >= 2")
 
-    metrics = _evaluate_kmeans(age_imputed, max_k=max_k, random_state=int(args.random_state))
-    best_k = _select_best_k(metrics)
+    eval_max_k = max_k if forced_k is None else max(max_k, int(forced_k))
+    metrics = _evaluate_kmeans(age_imputed, max_k=eval_max_k, random_state=int(args.random_state))
+    best_k = int(forced_k) if forced_k is not None else _select_best_k(metrics)
 
     labels, centers_age = _fit_kmeans(age_imputed, k=best_k, random_state=int(args.random_state))
     age_cluster, mapping = _relabel_by_center(labels, centers_age)
@@ -316,9 +329,15 @@ def main() -> None:
     # Tasa de Transported por clúster (si aplica)
     rate_df = _transported_rate_by_cluster(df_out)
     if rate_df is not None:
-        transported_rate_path = Path(args.summary).with_name("age_cluster_transported_rate.csv")
+        summary_path = Path(args.summary)
+        stem = summary_path.stem  # p.ej. age_cluster_summary_k5
+        if stem.startswith("age_cluster_summary"):
+            rate_stem = stem.replace("age_cluster_summary", "age_cluster_transported_rate", 1)
+        else:
+            rate_stem = f"{stem}_transported_rate"
+        transported_rate_path = summary_path.with_name(rate_stem + summary_path.suffix)
         rate_df.to_csv(transported_rate_path, index=False)
-        _write_transported_rate_plot(rate_df, Path(args.plots_dir))
+        transported_plot_path = _write_transported_rate_plot(rate_df, Path(args.plots_dir), best_k=best_k)
 
     # Log final (simple)
     print("✓ Clustering de edad completado")
@@ -329,7 +348,7 @@ def main() -> None:
     print(f"  - plots:   {args.plots_dir}/age_clustering_*.png y {args.plots_dir}/age_clusters_distribution.png")
     if rate_df is not None:
         print(f"  - transported_rate: {transported_rate_path}")
-        print(f"  - transported_plot: {args.plots_dir}/age_clusters_transported_rate.png")
+        print(f"  - transported_plot: {transported_plot_path}")
     print("\nMétricas (k, silhouette):")
     print(metrics[["k", "silhouette"]].to_string(index=False))
 

@@ -20,6 +20,10 @@ This is a **Spaceship Titanic** machine learning project for binary classificati
 # Generates statistics and 10 visualizations in plots/
 python eda_analysis.py
 
+# Clustering: segmentación automática de grupos de edad (Age) usando KMeans 1D
+# Input: train9.csv → Output: train9_with_age_clusters.csv + age_cluster_summary.csv + plots/age_clustering_*.png
+python cluster_age_groups.py --input train9.csv --max-k 10
+
 # Feature engineering: consolidate 5 expense columns into TotalExpenses + HasExpenses
 # Input: train.csv → Output: train_with_expense_features.csv
 python create_expenses_features.py

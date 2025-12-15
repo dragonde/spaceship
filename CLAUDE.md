@@ -176,6 +176,9 @@ train.csv (original)
 | `train7.csv` | 8,693 | 15 | After GroupSize added |
 | `train8.csv` | 8,693 | 15 | After Name → Surname extraction |
 | `train9.csv` | 8,693 | 15 | **FINAL** - Surname in Surname_Group format |
+| `train_roomservice_filled.csv` | 8,693 | 14 | train.csv with RoomService imputed via XGBoost |
+| `spending.csv` | 8,693 | 6 | ID + 5 CDF columns (complete, no nulls) |
+| `spending-nonzero.csv` | 5,040 | 6 | spending.csv filtered (only rows with spending) |
 | `test.csv` | 4,277 | 13 | Test data (no target) |
 
 ### Feature Schema (train9.csv - FINAL)
@@ -272,6 +275,11 @@ Three comprehensive analyses confirm transport is an individual phenomenon:
 ├── train7.csv                         # After GroupSize added
 ├── train8.csv                         # After Name → Surname extraction
 ├── train9.csv                         # FINAL: Surname_Group format (Apellido_Grupo)
+├── train_roomservice_filled.csv       # train.csv with RoomService imputed via XGBoost
+├── spending.csv                       # ID + 5 CDF columns (complete, no nulls)
+├── spending-nonzero.csv               # spending.csv filtered (only rows with spending)
+├── spending_cdf_correlation.csv       # Correlation matrix between CDF variables
+├── roomservice_correlations.csv       # RoomService correlations with all variables
 ├── test.csv                           # Test data (no target)
 ├── sample_submission.csv              # Submission template
 ├── EDA_REPORT.md                      # Comprehensive EDA report (Spanish)
@@ -362,6 +370,122 @@ The EDA and data preprocessing are complete. To build predictive models:
 - Identifies groups with consistent vs mixed outcomes
 - Enables further analysis of group-level patterns
 
+## Expense Analysis & CDF Transformation
+
+### New Files Generated
+
+**spending.csv** (8,693 rows × 6 columns):
+- ID + 5 CDF columns (RoomServiceCDF, FoodCourtCDF, ShoppingMallCDF, SpaCDF, VRDeckCDF)
+- Created from the 5 original expense columns in train.csv
+- All values fully imputed (0 missing values)
+- All CDF values formatted to 4 decimal places
+
+**spending-nonzero.csv** (5,040 rows × 6 columns):
+- Filtered version of spending.csv
+- Contains only rows where at least one CDF value > 0 (has any spending)
+- Eliminates 3,653 rows with all CDF = 0 or null (no spending)
+- Retains 58.0% of original rows (passengers with any expenditure)
+
+### CDF (Cumulative Distribution Function) Calculation
+
+For each expense type, a CDF column was created with the following logic:
+- **If value is null:** CDF = null (preserved missing value)
+- **If value = 0:** CDF = 0 (no spending)
+- **If value > 0:** CDF = percentile (0-1) among all non-zero values of that expense type
+
+Formula: For each non-zero value, rank it among all non-zero values and normalize to 0-1 range.
+
+**Example (RoomService):**
+- 181 null values → RoomServiceCDF = null
+- 5,577 zero values → RoomServiceCDF = 0
+- 2,935 non-zero values → RoomServiceCDF = percentile rank (0.0201 to 1.0000)
+
+### Missing Value Imputation
+
+Strategy: Row-wise mean imputation for CDF columns
+1. For each row with missing CDF values
+2. Calculate the mean of non-null CDF values in that row
+3. Fill all null CDF values with that mean (rounded to 4 decimals)
+4. Result: **100% complete dataset** (0 missing values)
+
+### Expense Weights Calculation
+
+Two methods for calculating the relative weight of each expense type:
+
+**Method 1: By Maximum Value**
+```
+Suma de máximos: $114,173.00
+- RoomService:    $14,327.00 → Weight: 0.1255 ( 12.55%)
+- FoodCourt:      $29,813.00 → Weight: 0.2611 ( 26.11%) ← Highest
+- ShoppingMall:   $23,492.00 → Weight: 0.2058 ( 20.58%)
+- Spa:            $22,408.00 → Weight: 0.1963 ( 19.63%)
+- VRDeck:         $24,133.00 → Weight: 0.2114 ( 21.14%)
+```
+
+**Method 2: By Mean Value**
+```
+Suma de medias: $1,472.49
+- RoomService:      $224.69 → Weight: 0.1526 ( 15.26%)
+- FoodCourt:        $458.08 → Weight: 0.3111 ( 31.11%) ← Highest
+- ShoppingMall:     $173.73 → Weight: 0.1180 ( 11.80%)
+- Spa:              $311.14 → Weight: 0.2113 ( 21.13%)
+- VRDeck:           $304.85 → Weight: 0.2070 ( 20.70%)
+```
+
+**Key Observation:** FoodCourt dominates in both methods (26.11% vs 31.11%), reflecting its high spending values and high average across passengers.
+
+### RoomService Correlation Analysis
+
+Correlation analysis between RoomService and all variables in train.csv:
+
+**Top Correlations:**
+1. **Name** (η = 0.9992) - Each passenger has unique spending pattern
+2. **Cabin** (η = 0.8945) - **Strong predictor**: Cabin location highly correlated with RoomService spending
+3. CryoSleep (η = 0.2524) - Passengers in CryoSleep spend less
+4. HomePlanet (η = 0.2497) - Planet of origin affects spending
+5. Transported (η = 0.2446) - Slight relationship with transport status
+
+**Other expense categories:** All have very weak correlations (< 0.07), confirming independence between spending types.
+
+**Key Finding:** Cabin is the strongest actionable predictor of RoomService spending (89% correlation strength).
+
+### XGBoost Model for Missing Values Imputation
+
+Created an XGBoost regression model to predict missing RoomService values (181 missing).
+
+**Model Configuration:**
+- Features: Cabin, CryoSleep, HomePlanet, Transported
+- Target: RoomService
+- Training data: 8,512 rows (with known RoomService)
+- Algorithm: XGBoost Regressor (100 trees, max_depth=6)
+
+**Model Performance:**
+- R² Score: 0.1657 (16.57%)
+- RMSE: $597.77
+- MAE: $257.45
+
+**Feature Importance:**
+1. Transported: 43.88%
+2. HomePlanet: 35.51%
+3. CryoSleep: 14.07%
+4. Cabin: 6.55%
+
+**Results:**
+- 181 missing values successfully predicted
+- Predicted values range: $0 - $1,776 (mean: $238.42)
+- Output file: `train_roomservice_filled.csv` (100% complete, 0 missing values)
+
+**R² Interpretation:** The 16.57% R² indicates the model captures weak-to-moderate predictive power. This means:
+- The model is better than random guessing
+- However, 83% of RoomService spending variance depends on unknown factors
+- Predictions have moderate uncertainty (±$257 average error)
+- Individual preferences and economic factors likely dominate spending behavior
+
+**Files Generated:**
+- `spending_cdf_correlation.csv` - Correlation matrix between CDF variables
+- `roomservice_correlations.csv` - RoomService correlations with all train.csv variables
+- `train_roomservice_filled.csv` - Complete train.csv with predicted RoomService values
+
 ## Key Insights Summary
 
 1. **CryoSleep is the strongest predictor** (76% vs 38% transport rate)
@@ -378,3 +502,8 @@ The EDA and data preprocessing are complete. To build predictive models:
 8. **Data quality is excellent** - <3% missing values across all columns
 9. **GroupSize may be useful** - clear inverse relationship with transport consistency
 10. **Surname_Group is NOT a predictor** - barely better than groups alone (+2.69%)
+11. **FoodCourt is the dominant spending category** (31.11% of total mean spending)
+12. **58% of passengers had any spending** - 42% spent $0 across all amenities
+13. **Cabin is the strongest predictor of RoomService spending** (89% correlation) - location matters
+14. **Spending categories are independent** - weak correlations between expense types (< 0.30)
+15. **Individual spending is hard to predict** - XGBoost R² = 16.57%, showing high personal variability
